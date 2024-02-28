@@ -8,6 +8,7 @@ from binLC import binlc
 from SEDmodel import SEDmodel 
 from pathos.multiprocessing import Pool 
 from copy import deepcopy 
+from library import MonteC
 
 class sedfit(magflux,SEDmodel):
     '''Different methods for the photometric SED fitting, such as blackbody''' 
@@ -20,14 +21,6 @@ class sedfit(magflux,SEDmodel):
         self.redshift=redshift
     #    self.pars=[] 
         self.spec_fit=spec_fit 
-
-    @staticmethod 
-    def MonteC(flux_dbsp,err_dbsp,model='normal'):
-        flux=np.ones_like(flux_dbsp)
-        if model=='normal':
-            for i in range(0,len(flux_dbsp)):
-                flux[i]=np.random.normal(flux_dbsp[i],err_dbsp[i])
-        return flux
 
     @staticmethod
     def processLC(mjd_base, mjd,flux,ferr,band=None, method='interp',kind='linear',gapmax=None,binmax=None,binmin=None,show=True): 
@@ -374,7 +367,7 @@ class sedfit(magflux,SEDmodel):
                     pool=Pool(processes=MC_pool_number)
                     iterable= [] 
                     for i in range(MC_number):
-                        flux0 = self.MonteC(flux,ferr)  
+                        flux0 = MonteC(flux,ferr)  
                         iterable.append([lam,flux0,ferr])
                     result_list=pool.starmap_async(func=self.sedfit_nofilter, iterable=iterable  ).get()
                     params, perror, physical,params_MC, physical_MC=self.process_MCres(result_list) # process the MC results to the normal format 
