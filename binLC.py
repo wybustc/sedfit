@@ -2,13 +2,14 @@ import numpy as num
 import matplotlib.pyplot as plt  
 
 class binlc:
-    def __init__(self,mjd,flux, ferr,method='median',node_method='gap', gap=1,Nsep=5,sep=None ,show=True, Nmin=2, bin1=True):
+    def __init__(self,mjd,flux, ferr,method='median',node_method='gap', gap=1,Nsep=5,sep=None ,show=True, Nmin=2, bin1=True,path_savefig=None):
         #here we use the flux as an representative, and in fact magitude is also accepted 
         ind=num.argsort(mjd) 
         self.mjd=mjd[ind]
         self.flux=flux[ind]
         self.ferr=ferr[ind]
         self.show=show
+        self.path_savefig=path_savefig
         if bin1==True:
             self.binning(method=method,node_method=node_method,gap=gap,Nsep=Nsep, sep=sep, Nmin=Nmin) 
         
@@ -72,7 +73,10 @@ class binlc:
         x=num.arange(self.mjd[0],self.mjd[-1],0.01) #NOTE When the gap between mjd less than 0.01, the data point in the plot may not the shadow region. If we set 0.001, then it will cost much time to plot the figure, please improve this sentence
         for node_low,node_up in zip(self.nodes_low,self.nodes_up) :
             ax.fill_between(x,ylim[0],ylim[1],where=( (x>=node_low)&(x<=node_up)),color='g',alpha=0.3)
-        plt.show()
+        
+        if self.path_savefig is not None: plt.savefig(self.path_savefig)
+        if self.show: plt.show()
+        plt.close()
     
     def binning(self, method='median', Nmin=2, node_method='gap', gap=1,Nsep=5,sep=None, prod_nodes=True): 
         #The method is what to used for binned the data: median or average  
@@ -107,7 +111,7 @@ class binlc:
             bmjds.append(num.mean(self.mjd[ind])); bfluxs.append(flux); bferrs.append(ferr) ; bNs.append( len(self.mjd[ind]))
         self.bmjd=num.array(bmjds);self.bflux=num.array(bfluxs);self.bferr=num.array(bferrs); self.bN=num.array(bNs)
 
-        if self.show: 
+        if (self.path_savefig is not None) | self.show: 
             self.plot_res() 
         return self.bmjd, self.bflux, self.bferr 
     
