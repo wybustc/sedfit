@@ -1,18 +1,25 @@
 import numpy as np 
 import mpfit 
+import astropy.constants as const 
 import astropy.units as u 
+from astropy.table import Table 
 from magflux import magflux 
 import matplotlib.pyplot as plt 
 from scipy.interpolate import interp1d 
 from binLC import binlc 
+# from sfdmap import ebv as ebv_value
+from astropy.coordinates import SkyCoord
+# from extinction import calzetti00,apply,remove,fitzpatrick99
+from library import flux2L,MonteC 
+import os, json 
 from SEDmodel import SEDmodel 
+#import multiprocessing as multip 
 from pathos.multiprocessing import Pool 
 from copy import deepcopy 
-from library import MonteC
 
 class sedfit(magflux,SEDmodel):
     '''Different methods for the photometric SED fitting, such as blackbody''' 
-    def __init__(self,LC,redshift=None, mw_ebv=None, spec_fit=False):
+    def __init__(self,LC,redshift=None, mw_ebv=None, spec_fit=False, path_savedir=None):
         # super().__init__(LC,redshift=redshift,mw_ext=False) 
         # super(magflux, self).__init__()
         magflux.__init__(self,deepcopy(LC),redshift=redshift,mw_ext=False) 
@@ -21,9 +28,17 @@ class sedfit(magflux,SEDmodel):
         self.redshift=redshift
     #    self.pars=[] 
         self.spec_fit=spec_fit 
+        self.path_savedir=path_savedir
+        if self.path_savedir is not None:
+            if not os.path.exists(self.path_savedir): 
+                os.mkdir(self.path_savedir) 
+                os.mkdir(os.path.join(self.path_savedir, 'epoch_fit'))
+            else: 
+                if not os.path.exists(os.path.join(self.path_savedir, 'epoch_fit')):
+                    os.mkdir(os.path.join(self.path_savedir, 'epoch_fit'))
 
     @staticmethod
-    def processLC(mjd_base, mjd,flux,ferr,band=None, method='interp',kind='linear',gapmax=None,binmax=None,binmin=None,show=True): 
+    def processLC(mjd_base, mjd,flux,ferr,band=None, method='interp',kind='linear',gapmax=None,binmax=None,binmin=None,show=True,path_savedir=None ): 
         #NOTE, the input mjd,flux,ferr should be dimensionless value 
         #In this function, we can get the an estimate at mjd_base from the light curve (mjd,flux,ferr)
         #kind is the method used in the interpolate processing 
@@ -53,12 +68,14 @@ class sedfit(magflux,SEDmodel):
              
             flux_base=flux1d(mjd_base)
             ferr_base=ferr1d(mjd_base)
-            if show: 
+            if (path_savedir is not None) | show: 
                 plt.plot(mjd,flux,color='gray',alpha=0.6)
                 plt.errorbar(mjd     , flux     , yerr=ferr               , color='blue',alpha=0.6,fmt='o',fillstyle='none') 
                 plt.errorbar(mjd_base, flux_base, yerr=ferr_base , fmt='s', color='k') 
                 plt.title(str(band)+' '+ method)
-                plt.show() 
+                if path_savedir is not None: plt.savefig(os.path.join(path_savedir, 'proSED', '%s_%s.png'%(band,method)))
+                if show: plt.show()
+                plt.close()  
             return mjd_base,flux_base,ferr_base
         elif method=='bin': 
             if binmin  is not None: 
@@ -67,7 +84,7 @@ class sedfit(magflux,SEDmodel):
                     if mjd_grid>= mjd_base_new[-1]+binmin: mjd_base_new=np.append(mjd_base_new,mjd_grid) 
                 mjd_base =mjd_base_new 
 
-            bl=binlc(mjd,flux,ferr,bin1=False,show=show ) 
+            bl=binlc(mjd,flux,ferr,bin1=False,show=show, path_savedir=os.path.join(path_savedir,'proSED', '%s_%s.png'%(band,method))) 
             bl.nodes_low=np.append( mjd_base[0]-(mjd_base[1]-mjd_base[0])/2, (mjd_base[0:-1]+mjd_base[1:])/2    ) 
             bl.nodes_up =np.append((mjd_base[0:-1]+mjd_base[1:])/2, mjd_base[-1]+ (mjd_base[-1]-mjd_base[-2])/2 )
             if binmax is not None: 
@@ -248,7 +265,7 @@ class sedfit(magflux,SEDmodel):
             res=mpfit.mpfit(fitFunc, parinfo=self.pars)
             if not res.errmsg=='': raise Exception('MPFIT return errmsg: %s'%res.errmsg) 
             if res.perror is None: res.perror=np.nan*np.ones_like(res.params) #NOTE NOTE NOTE, why this case ? 
-            if show: #NOTE, maybe we also should plot the sub-components
+            if (self.path_savedir is not None) | show: #NOTE, maybe we also should plot the sub-components
                 yfit_lam=self.sedfunc(lam, res.params) / f_mean *y_mean
             #    print('manually-chi2',sum((flux-yfit_lam)**2/ferr**2)/(len(flux)-2)) 
                 xfit=np.arange(min(lam),max(lam), 0.1)  
@@ -260,8 +277,16 @@ class sedfit(magflux,SEDmodel):
                 else:
                     plt.errorbar(lam, yfit_lam  , fmt='go',alpha=0.3)
                     plt.errorbar(lam, flux, ferr, fmt='o') 
+                ymin =np.min([np.min(flux-ferr),np.min(yfit)]) 
+                ymax =np.max([np.max(flux+ferr),np.max(yfit)]) 
+                # ymin =np.min(flux-ferr) 
+                # ymax =np.max(flux+ferr)
+                plt.ylim(ymin, ymax)
                 plt.title(str(mjd)+' '+str(res.fnorm/res.dof))
-                plt.show() 
+                if self.path_savedir is not None: 
+                    plt.savefig(os.path.join(self.path_savedir, 'epoch_fit', '%0.3f.png'%mjd))
+                if show: plt.show() 
+                plt.close() 
         #NOTE 1/f_mean*y_mean is not same among each sed fitting, so parsing it is neccessary to get true luminosity and flux 
         return res, self.params2physical(res.params, res.perror,scale=1/f_mean*y_mean, redshift=self.redshift), 1/f_mean*y_mean 
 
@@ -278,7 +303,7 @@ class sedfit(magflux,SEDmodel):
             if not res.errmsg=='': raise Exception('MPFIT return errmsg: %s'%res.errmsg) 
             if res.perror is None: res.perror=np.nan*np.ones_like(res.params) #NOTE NOTE NOTE, why this case ? 
 
-            if show:      
+            if (self.path_savedir is not None) | show:      
                 yfit=self.sedfunc(bands,res.params, wave,filter_data, fzero_lam) / f_mean *y_mean 
                 ysed=self.sedfunc_beforeFilter(wave, res.params)  / f_mean * y_mean
                 ax=plt.axes() 
@@ -288,12 +313,18 @@ class sedfit(magflux,SEDmodel):
                 plt.errorbar(lam, yfit,       fmt='s',label='best-fit')  
                 plt.errorbar(lam, flux, ferr, fmt='o',label='data')
                 plt.title(str(mjd)+' '+str(res.fnorm/res.dof))
+                ymin=np.min([flux-ferr, yfit-ferr]) 
+                ymax=np.max([flux+ferr, yfit+ferr])
+                plt.ylim(ymin, ymax)
                 ax.legend() 
                 ax=ax.twinx() 
                 for frac,band in zip(filter_data,bands): 
                     ax.plot(wave,frac,label=band,alpha=0.4) 
                 ax.legend() 
-                plt.show() 
+                if self.path_savedir is not None: 
+                    plt.savefig(os.path.join(self.path_savedir, 'epoch_fit', '%0.3f.png'%mjd))
+                if show:  plt.show() 
+                plt.close() 
         #NOTE 1/f_mean*y_mean is not same among each sed fitting, so parsing it is neccessary to get true luminosity and flux 
         return res, self.params2physical(res.params, res.perror,scale=1/f_mean*y_mean, redshift=self.redshift), 1/f_mean*y_mean 
     
@@ -335,7 +366,7 @@ class sedfit(magflux,SEDmodel):
 
 
         
-    def fitting(self,MC=False,MC_number=1000,MC_pool_number=6,fit_method='MPFIT',show_evl=True, show_fit=False): 
+    def fitting(self,MC=False,MC_number=1000,MC_pool_number=6, fit_method='MPFIT',show_evl=True, show_fit=False): 
         #MC,wheter to do MC or not? 
         #MC_number, the MC_number 
         #fit_method: ['MPFIT', 'Curve-fit','calculate'] 
@@ -395,20 +426,188 @@ class sedfit(magflux,SEDmodel):
         for model in self.Physical.keys():
             for key in self.Physical[model].keys(): 
                 self.Physical[model][key]=np.array(self.Physical[model][key]) 
-        if show_evl:
-            for key in ['flux', 'lumi', 'Tbb','Rbb']:
-                for model in self.Physical.keys(): 
-                    if (not 'BlackBody' in model) : continue   
-                    plt.errorbar(self.mjd_sed, self.Physical[model][key][:,0],yerr=self.Physical[model][key][:,1],label='%s-%s'%(model,key),fmt='o')
-                 #   plt.errorbar(self.mjd_sed, self.Physical[model][key][:,1],yerr=self.Physical[model][key][:,1],label='%s-%sErr'%(model,key),fmt='o')
-                plt.legend(); plt.show() ;plt.close() 
-            for key in ['scale','index']:
-                for model in self.Physical.keys():
-                    if (not 'Powerlaw' in model) :continue 
-                    plt.errorbar(self.mjd_sed, self.Physical[model][key][:,0],yerr=self.Physical[model][key][:,1],label='%s-%s'%(model,key),fmt='o')
-                plt.legend(); plt.show(); plt.close() 
+
+        if (self.path_savedir is not None) | show_evl:  
+            if 'BlackBody' in self.fitmodel: 
+                for key in ['flux', 'lumi', 'Tbb','Rbb']:
+                    ymin=[]; ymax=[] 
+                    for model in self.Physical.keys(): 
+                        if (not 'BlackBody' in model) : continue   
+                        plt.errorbar(self.mjd_sed, self.Physical[model][key][:,0],yerr=self.Physical[model][key][:,1],label='%s-%s'%(model,key),fmt='o')
+                        ymin.append( np.min(self.Physical[model][key][:,0])- np.std( self.Physical[model][key][:,0]))
+                        ymax.append( np.max(self.Physical[model][key][:,0])+ np.std( self.Physical[model][key][:,0]))
+                    #   plt.errorbar(self.mjd_sed, self.Physical[model][key][:,1],yerr=self.Physical[model][key][:,1],label='%s-%sErr'%(model,key),fmt='o')
+                    plt.ylim(np.min(ymin), np.max(ymax));plt.legend()
+                    if self.path_savedir is not None: plt.savefig(os.path.join(self.path_savedir, 'BlackB_%s_evolution.png'%key))
+                    if show_evl: plt.show() 
+                    plt.close() 
+            if 'Powerlaw' in self.fitmodel: 
+                for key in ['scale','index']:
+                    ymin=[]; ymax=[] 
+                    for model in self.Physical.keys():
+                        if (not 'Powerlaw' in model) :continue 
+                        plt.errorbar(self.mjd_sed, self.Physical[model][key][:,0],yerr=self.Physical[model][key][:,1],label='%s-%s'%(model,key),fmt='o')
+                        ymin.append( np.min(self.Physical[model][key][:,0])- np.std( self.Physical[model][key][:,0]))
+                        ymax.append( np.max(self.Physical[model][key][:,0])+ np.std( self.Physical[model][key][:,0]))
+                    plt.ylim(np.min(ymin), np.max(ymax));plt.legend()
+                    if self.path_savedir is not None: plt.savefig(os.path.join(self.path_savedir, 'Powlaw_%s_evolution.png'%key))
+                    if show_evl: plt.show()
+                    plt.close() 
             if 'HostExt' in self.fitmodel:
                 plt.errorbar(self.mjd_sed, self.Physical['HostExt']['ebv'][:,0], yerr=self.Physical['HostExt']['ebv'][:,1],label='HostExt-ebv',fmt='o' )
                 plt.title('HostExt-Ebv');plt.xlabel('MJD') ;plt.ylabel('EBV')
-                plt.show() 
+                plt.ylim(np.min(self.Physical['HostExt']['ebv'][:,0])-np.std(self.Physical['HostExt']['ebv'][:,0]), 
+                         np.max(self.Physical['HostExt']['ebv'][:,0])+np.std(self.Physical['HostExt']['ebv'][:,0]))
+                if self.path_savedir is not None: plt.savefig(os.path.join(self.path_savedir, 'HostEBV_evolution.png')) #NOTE EBV need to be a fixed value 
+                if show_evl: plt.show() 
                 plt.close()
+        if self.path_savedir is not None: 
+            self.save_results() 
+
+
+    def save_results(self, fmt='json'): 
+        if fmt=='json':
+            def convert_numpy_to_list(obj):
+                if isinstance(obj, np.ndarray):
+                    return obj.tolist()
+                elif isinstance(obj, dict):
+                    return {key: convert_numpy_to_list(value) for key, value in obj.items()}
+                else:
+                    return obj
+            sed= convert_numpy_to_list(deepcopy(self.sed)) 
+            with open(os.path.join(self.path_savedir,'sed.json'),'w') as fp: 
+                json.dump(sed, fp) 
+            param=deepcopy(self.Physical) 
+            param['chi2']=self.chi2 
+            param['nomalise_scale']=self.normalise_scale
+            param['mjd_sed']=self.mjd_sed 
+            param= convert_numpy_to_list(param) 
+            with open(os.path.join(self.path_savedir,'res.txt'),'w') as fp: 
+                json.dump(param, fp) 
+        elif fmt=='table': 
+            pass   
+
+
+
+
+
+
+
+
+
+    # def proSED(self,bands_include=['Swift-U','Swift-B','Swift-V','Swift-UVW1','Swift-UVW2','Swift-UVM2'],band_base='Swift-U',show=True):  
+    #     #covert the LC from format of {'band':{'mjd':[], 'flux':[], 'ferr':[] }} 
+    #     #              to   format of {'mjd': {'lam':[], 'flux':[], 'ferr':[], 'bands':[]}} 
+    #     mjd=self.LC[band_base]['mjd']
+    #     sed={} 
+    #     for i in range(len(mjd)):
+    #         sed[mjd[i]]={'lam':[],'flux':[], 'ferr':[], 'bands':[]} 
+    #         for band in bands_include: 
+    #             lc=self.LC[band] 
+    #             if band==band_base: 
+    #                 lam,flux,ferr=lc['lam'][i], lc['flux'][i], lc['ferr'][i] 
+    #             else: 
+    #                 if i==0:
+    #                     ind=( lc['mjd']>(mjd[i]- (mjd[i+1]-mjd[i])/2) ) & (lc['mjd']< (mjd[i+1]+mjd[i])/2) 
+    #                 elif i==len(mjd)-1:
+    #                     ind=( lc['mjd']>(mjd[i]+mjd[i-1])/2) & (lc['mjd']< (mjd[i]+(mjd[i]-mjd[i-1])/2) ) 
+    #                 else: 
+    #                     ind=( lc['mjd']>(mjd[i]+mjd[i-1])/2) & (lc['mjd']< (mjd[i+1]+mjd[i])/2) 
+    #                 flux,ferr=self.binN(lc['flux'][ind], lc['ferr'][ind]) 
+    #             #    print(flux,ferr) 
+    #                 lam =lc['lam'][0] 
+    #             for key,data in zip(['lam','flux','ferr','bands'],[lam,flux,ferr,band]): #NOTE NOTE why here need a index zero?
+    #                 sed[mjd[i]][key].append(data) 
+    #         for key in ['lam','flux','ferr']:
+    #      #       print(sed[mjd[i]][key])
+    #             datas=[]
+    #             for data in sed[mjd[i]][key]:
+    #                 datas.append(data.value)
+    #             sed[mjd[i]][key]=np.array(datas) #NOTE change this  
+    #             print(datas)
+
+    #     self.sed=sed 
+    #     if show: 
+    #         #NOTE NOTE we also should plot the SED together
+    #         for band in bands_include:
+    #             lc=self.LC[band]  
+    #             plt.errorbar(lc['mjd'],lc['flux'],yerr=lc['ferr'],fmt='o',alpha=0.3) 
+
+    #         ylim=plt.ylim() 
+    #         color=['g','pink']
+    #         x=np.arange(mjd[0],mjd[-1], 0.01)
+    #         for i in range( len(mjd) ): 
+    #             if i==0:ind=( x> (mjd[i]-(mjd[i+1]-mjd[i])/2) ) & (x< (mjd[i+1]+mjd[i])/2) 
+    #             elif i==len(mjd)-1: ind=( x >(mjd[i]+mjd[i-1])/2) & (x< (mjd[i]+(mjd[i]-mjd[i-1])/2) ) 
+    #             else:   ind=( x> (mjd[i]+mjd[i-1])/2          ) & (x< (mjd[i+1]+mjd[i])/2) 
+    #             plt.fill_between(x,ylim[0],ylim[1],where=ind,facecolor=color[int(math.fmod(i,2))])
+    #             plt.errorbar(np.ones_like(sed[mjd[i]]['flux'])*mjd[i], sed[mjd[i]]['flux'],yerr=sed[mjd[i]]['ferr'],fmt='s')
+    #         plt.show() 
+#     def __init__(self,wave=None, freq=None, flux=None, ferr=None, redshift=None, mw_ebv=None):
+#         assert (wave is not None ) & (freq is not None), 'wave or freq must be given' 
+        
+#         if freq is not None: self.freq=(const.c/wave).to(u.Hz)  #
+#         else:                self.freq=freq.to(u.Hz) 
+
+#         try:
+#             self.flux=flux.to(u.Unit('erg/s/cm^2/Hz')) 
+#             self.ferr=ferr.to(u.Unit('erg/s/cm^2/Hz')) 
+#         except: 
+#             self.flux=(flux*const.c/self.freq**2).to(u.Unit('erg/s/cm^2/Hz')) 
+#             self.ferr=(ferr*const.c/self.freq**2).to(u.Unit('erg/s/cm^2/Hz')) 
+        
+#     def blackbody(self):
+#         def residual(p, fjac=None, xval=self.freq, yval=self.flux, errval=self.ferr): 
+#             yf=p[0]*2*xval**3*h/c**2*(num.e**(h*xval/k/p[1])-1)**(-1)
+#             yf_mean=num.mean(yf);yf=yf/yf_mean
+#             return [0,(yval - yf)/errval] 
+#         self.func=residual
+#         self.pars=[{'value':1,   'limited':[1,0],'limits':[0,0],'parname':'scale'},\
+#                    {'value':1000,'limited':[1,0],'limits':[0,0],'parname':'Temperature'}]
+#         def BB():
+#             pass 
+
+
+        
+        
+
+# def fit_blackbody(f1,f1_err,f2,f2_err,v1=299792458.0/4722.74e-10*u.Hz,v2=299792458.0/6339.61e-10*u.Hz,show=True):
+# 	print('\033[1;31m NOTE: when you input redshift corrected flux , you also need to input redshift-corrected frequecy v1 and v2 because the default is in observed frame\033[0m')
+# 	f1=f1.to('erg/s/cm^2/Hz').value;f1_err=f1_err.to('erg/s/cm^2/Hz').value;f2=f2.to('erg/s/cm^2/Hz').value;f2_err=f2_err.to('erg/s/cm^2/Hz').value
+# 	v1=v1.to('Hz').value;v2=v2.to('Hz').value
+# 	h=const.h.to('J*s').value;k=const.k_B.to('J/K').value;c=const.c.to('km/s').value	
+# 	x=num.array([v1,v2]);y=num.array([f1,f2]);yerr=num.array([f1_err,f2_err])
+# 	mean=num.mean(y);y=y/mean;yerr=yerr/mean
+# #	print(f1,f2)
+# 	def residuals0(p,fjac=None, xval=x, yval=y, errval=yerr): #The effect of the parameter 'fjac'
+# 		yf=p[0]*2*xval**3*h/c**2*(num.e**(h*xval/k/p[1])-1)**(-1) # *(c/xval)**-1.7
+# 		yf_mean=num.mean(yf);yf=yf/yf_mean
+	
+# 		return [0,(yval - yf)/errval]
+# 	par=[{'value':1,   'limited':[1,0],'limits':[0,0],'parname':'scale'},\
+# 		 {'value':1000,'limited':[1,0],'limits':[0,0],'parname':'Temperature'}]
+	
+# 	res=mpfit.mpfit(residuals0, parinfo=par,quiet=True)
+# 	p=res.params
+# 	#Bv1=2*v1**3*h/c**2*(num.e**(h*v1/k/T)-1)**(-1)
+# 	#Bv2=2*v2**3*h/c**2*(num.e**(h*v2/k/T)-1)**(-1)
+# 	yf=p[0]*2*x**3*h/c**2*(num.e**(h*x/k/p[1])-1)**(-1) # * (c/x)**-1.7
+# 	yf_mean=num.mean(yf)
+
+# 	res.params[0]=res.params[0]*mean/yf_mean
+# 	res.perror[0]=res.perror[0]*mean/yf_mean
+
+# #	p=res.params
+# #	yf=p[0]*2*x**3*h/c**2*(num.e**(h*x/k/p[1])-1)**(-1)
+# 	if show:
+# 		plt.errorbar(x,y*mean,yerr=yerr*mean,fmt='o')
+# 		plt.plot(x,yf/yf_mean*mean)
+# 		plt.show()
+
+# 	fluxbb=res.params[0]*2*(k*res.params[1])**4*(num.pi)**4/15/h**3/c**2*u.Unit('erg/s/cm^2')
+# #	ferrbb=( (res.perror[0]/res.params[0])**2+ (4*res.perror[1]/res.params[1])**2 )**0.5*fluxbb #NOTE when you use this ,check it 
+# #	print('scale_err:',res.perror[0]/res.params[0])
+# #	
+# #	bb=models.BlackBody(temperature=res.params[1]*u.K,scale=1)
+# #	print(fluxbb,bb.bolometric_flux)
+# 	return x,yf,res,fluxbb#,ferrbb
